@@ -1,4 +1,9 @@
 extern crate rand;
+extern crate coreaudio;
+
+use coreaudio::audio_unit::{AudioUnit, IOType, SampleFormat};
+use coreaudio::audio_unit::render_callback::{self, data};
+use std::f64::consts::PI;
 
 use std::cmp;
 use std::io;
@@ -12,6 +17,7 @@ type Chord = (u8, u8, u8, u8);
 /// interactively build a chord progression
 /// for phase 1 - it'll be text based, for phase 2 - actually play the sounds
 fn main() {
+    play_sound();
     println!("Welcome to Chord Collaborator!");
     println!("Would you like to start building your progression?");
     println!("Type 'yes' otherwise I'll bid you farewell.");
@@ -103,4 +109,62 @@ fn chord_to_string(chord: &Chord) -> String {
         note_val_to_symbol(&(chord.2)),
         note_val_to_symbol(&(chord.3)),
     )
+}
+
+struct SineWaveGenerator {
+    time: f64,
+    freq: f64,
+    volume: f64,
+}
+
+impl SineWaveGenerator {
+    fn new(freq: f64, volume: f64) -> Self {
+        SineWaveGenerator {
+            time: 0.,
+            freq,
+            volume,
+        }
+    }
+}
+
+impl Iterator for SineWaveGenerator {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        self.time += 1. / 44_100.;
+        let output = ((self.time * PI * 2.).sin() * self.volume) as f32;
+        Some(output)
+    }
+}
+
+fn play_sound() -> Result<(), coreaudio::Error> {
+    let frequency_hz = 440.;
+    let volume = 0.15;
+    let mut samples = SineWaveGenerator::new(frequency_hz, volume);
+
+    // Construct an Output audio unit that delivers audio to the default output device.
+    let mut audio_unit = AudioUnit::new(IOType::DefaultOutput)?;
+
+    let stream_format = audio_unit.output_stream_format()?;
+    println!("{:#?}", &stream_format);
+
+    // For this example, our sine wave expects `f32` data.
+    assert!(SampleFormat::F32 == stream_format.sample_format);
+
+    type Args = render_callback::Args<data::NonInterleaved<f32>>;
+    audio_unit.set_render_callback(move |args| {
+        let Args { num_frames, mut data, .. } = args;
+        for i in 0..num_frames {
+            let sample = samples.next().unwrap();
+            for channel in data.channels_mut() {
+                channel[i] = sample;
+            }
+        }
+        Ok(())
+    })?;
+
+    audio_unit.start()?;
+
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+
+    Ok(())
 }
